@@ -1,0 +1,418 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#090d18">
+<title>Streamora — Live TV</title>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<style>
+:root {
+  --bg:#090d18; --panel:#111827; --line:#263247;
+  --accent:#7c6cff; --text:#f1f5ff; --muted:#96a2b8;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+font-family:system-ui,-apple-system,sans-serif}
+header{padding:18px 5%;display:flex;align-items:center;
+justify-content:space-between;border-bottom:1px solid var(--line)}
+.logo{font-size:23px;font-weight:850;letter-spacing:-1px}
+.logo span{color:var(--accent)}
+.status{font-size:12px;color:var(--muted)}
+main{max-width:1450px;margin:auto;padding:24px 4%}
+.hero{margin:8px 0 22px}
+.hero h1{font-size:clamp(26px,4vw,40px);margin:0 0 8px}
+.hero p{color:var(--muted);margin:0}
+.controls{display:flex;gap:10px;flex-wrap:wrap;margin:22px 0}
+input,select,button{font:inherit;color:var(--text);
+background:var(--panel);border:1px solid var(--line);
+border-radius:10px;padding:12px}
+input{flex:1;min-width:170px}
+select{max-width:100%;min-width:140px}
+button{cursor:pointer}
+button:hover,.channel:hover{border-color:var(--accent)}
+.layout{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(280px,1fr);
+gap:20px;align-items:start}
+.player-card,.list-card{background:var(--panel);
+border:1px solid var(--line);border-radius:16px;overflow:hidden}
+video{display:block;width:100%;aspect-ratio:16/9;background:#000}
+.now{padding:15px 17px}
+.now h2{font-size:18px;margin:0 0 5px}
+.now p{font-size:13px;color:var(--muted);margin:0}
+.list-head{padding:15px;border-bottom:1px solid var(--line)}
+.list-head h2{font-size:17px;margin:0 0 5px}
+#count{font-size:12px;color:var(--muted)}
+#channels{padding:8px;max-height:590px;overflow:auto}
+.channel{display:flex;align-items:center;gap:12px;width:100%;
+text-align:left;margin:3px 0;padding:10px;border-radius:10px;
+background:transparent;border-color:transparent}
+.channel.active{background:#242344;border-color:#49418a}
+.channel img,.placeholder{width:42px;height:42px;
+border-radius:9px;object-fit:contain;background:#0b1020;flex-shrink:0}
+.placeholder{display:grid;place-items:center;font-weight:bold;color:#a9a0ff}
+.details{min-width:0;flex:1}
+.details strong{display:block;font-size:13px;overflow-wrap:anywhere}
+.details small{display:block;color:var(--muted);font-size:11px;margin-top:4px}
+.star{color:#f8ce65;font-size:19px}
+#more{width:calc(100% - 24px);margin:0 12px 12px}
+.message{padding:18px;color:var(--muted);font-size:14px}
+footer{padding:28px 5%;text-align:center;color:var(--muted);font-size:12px}
+@media(max-width:760px){
+ main{padding:18px 12px}
+ .layout{grid-template-columns:1fr}
+ #channels{max-height:480px}
+ header{padding:16px}
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">STREAM<span>ORA</span></div>
+  <div class="status">● LIVE TV EXPLORER</div>
+</header>
+
+<main>
+  <section class="hero">
+    <h1>Your world. Your channels.</h1>
+    <p>Explore publicly listed TV streams from around the world.</p>
+  </section>
+
+  <div class="controls">
+    <input id="search" type="search" placeholder="Search channels...">
+    <select id="category">
+      <option value="">All categories</option>
+    </select>
+    <button id="favorites">☆ Favorites</button>
+  </div>
+
+  <div class="layout">
+    <section class="player-card">
+      <video id="video" controls playsinline
+        poster="" preload="metadata"></video>
+      <div class="now">
+        <h2 id="playing">Choose a channel</h2>
+        <p id="playerStatus">Select a channel to start playback.</p>
+      </div>
+    </section>
+
+    <section class="list-card">
+      <div class="list-head">
+        <h2>Explore channels</h2>
+        <div id="count">Loading playlist...</div>
+      </div>
+      <div id="channels">
+        <div class="message">Loading channels...</div>
+      </div>
+      <button id="more" hidden>Show more</button>
+    </section>
+  </div>
+</main>
+
+<footer>
+  Streamora is an independent playlist player. Streams are provided by
+  their respective sources; availability and playback are not guaranteed.
+</footer>
+
+<script>
+const PLAYLIST =
+  "https://iptv-org.github.io/iptv/index.m3u";
+
+const $ = id => document.getElementById(id);
+const video = $("video");
+let allChannels = [];
+let selected = null;
+let visibleLimit = 100;
+let showFavorites = false;
+let favorites = new Set();
+let hls = null;
+
+try {
+  favorites = new Set(JSON.parse(
+    localStorage.getItem("streamora-favorites") || "[]"
+  ));
+} catch {}
+
+function parseM3U(text) {
+  const lines = text.split(/\r?\n/);
+  const channels = [];
+  let info = "";
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+
+    if (line.startsWith("#EXTINF:")) {
+      info = line;
+      continue;
+    }
+
+    if (line.startsWith("#") || !/^https?:\/\//i.test(line)) {
+      continue;
+    }
+
+    const name = info.match(/,(.*)$/)?.[1]?.trim()
+      || "Unknown channel";
+    const attr = key => {
+      const match = info.match(
+        new RegExp('(?:^|\\s)' + key +
+        '="([^"]*)"', "i")
+      );
+      return match ? match[1] : "";
+    };
+
+    channels.push({
+      name,
+      url: line,
+      logo: attr("tvg-logo"),
+      group: attr("group-title") || "Uncategorized",
+      id: attr("tvg-id") || line
+    });
+
+    info = "";
+  }
+
+  return channels;
+}
+
+function safeImage(url) {
+  try {
+    const u = new URL(url);
+    return /^https?:$/.test(u.protocol) ? u.href : "";
+  } catch {
+    return "";
+  }
+}
+
+function filteredChannels() {
+  const query = $("search").value.trim().toLowerCase();
+  const group = $("category").value;
+
+  return allChannels.filter(ch => {
+    const matchesQuery =
+      ch.name.toLowerCase().includes(query) ||
+      ch.group.toLowerCase().includes(query);
+    const matchesGroup = !group || ch.group === group;
+    const matchesFavorite =
+      !showFavorites || favorites.has(ch.id);
+
+    return matchesQuery && matchesGroup && matchesFavorite;
+  });
+}
+
+function render() {
+  const results = filteredChannels();
+  $("count").textContent =
+    `${results.length.toLocaleString()} channels found`;
+
+  const container = $("channels");
+  container.replaceChildren();
+
+  if (!results.length) {
+    container.innerHTML =
+      '<div class="message">No channels found.</div>';
+    $("more").hidden = true;
+    return;
+  }
+
+  results.slice(0, visibleLimit).forEach(ch => {
+    const button = document.createElement("button");
+    button.className = "channel" +
+      (selected?.id === ch.id ? " active" : "");
+
+    const logoURL = safeImage(ch.logo);
+
+    if (logoURL) {
+      const img = document.createElement("img");
+      img.src = logoURL;
+      img.alt = "";
+      img.loading = "lazy";
+      img.referrerPolicy = "no-referrer";
+      img.onerror = () => {
+        const placeholder = document.createElement("div");
+        placeholder.className = "placeholder";
+        placeholder.textContent = "TV";
+        img.replaceWith(placeholder);
+      };
+      button.append(img);
+    } else {
+      const placeholder = document.createElement("div");
+      placeholder.className = "placeholder";
+      placeholder.textContent = "TV";
+      button.append(placeholder);
+    }
+
+    const details = document.createElement("div");
+    details.className = "details";
+
+    const name = document.createElement("strong");
+    name.textContent = ch.name;
+
+    const group = document.createElement("small");
+    group.textContent = ch.group;
+
+    details.append(name, group);
+
+    const star = document.createElement("span");
+    star.className = "star";
+    star.textContent = favorites.has(ch.id) ? "★" : "☆";
+    star.title = "Toggle favorite";
+
+    star.addEventListener("click", e => {
+      e.stopPropagation();
+      toggleFavorite(ch);
+    });
+
+    button.append(details, star);
+    button.addEventListener("click", () => playChannel(ch));
+    container.append(button);
+  });
+
+  $("more").hidden = results.length <= visibleLimit;
+}
+
+function toggleFavorite(ch) {
+  if (favorites.has(ch.id)) favorites.delete(ch.id);
+  else favorites.add(ch.id);
+
+  try {
+    localStorage.setItem(
+      "streamora-favorites",
+      JSON.stringify([...favorites])
+    );
+  } catch {}
+
+  render();
+}
+
+function stopPlayer() {
+  if (hls) {
+    hls.destroy();
+    hls = null;
+  }
+  video.pause();
+  video.removeAttribute("src");
+  video.load();
+}
+
+function playChannel(ch) {
+  selected = ch;
+  stopPlayer();
+
+  $("playing").textContent = ch.name;
+  $("playerStatus").textContent = "Connecting to stream...";
+
+  const url = ch.url;
+
+  try {
+    if (video.canPlayType("application/vnd.apple.mpegurl")) {
+      video.src = url;
+    } else if (window.Hls && Hls.isSupported()) {
+      hls = new Hls();
+      hls.loadSource(url);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        video.play().catch(() => {
+          $("playerStatus").textContent =
+            "Press Play to start the stream.";
+        });
+      });
+      hls.on(Hls.Events.ERROR, (_, data) => {
+        if (data.fatal) {
+          $("playerStatus").textContent =
+            "Stream unavailable or unsupported by the browser.";
+        }
+      });
+    } else {
+      video.src = url;
+    }
+
+    video.play().catch(() => {
+      $("playerStatus").textContent =
+        "Press Play. If playback fails, this stream may be unsupported.";
+    });
+  } catch {
+    $("playerStatus").textContent =
+      "Could not open this stream.";
+  }
+
+  render();
+}
+
+video.addEventListener("playing", () => {
+  $("playerStatus").textContent = "● Playing";
+});
+video.addEventListener("waiting", () => {
+  $("playerStatus").textContent = "Buffering...";
+});
+video.addEventListener("error", () => {
+  $("playerStatus").textContent =
+    "Playback failed. Try another channel.";
+});
+
+$("search").addEventListener("input", () => {
+  visibleLimit = 100;
+  render();
+});
+
+$("category").addEventListener("change", () => {
+  visibleLimit = 100;
+  render();
+});
+
+$("favorites").addEventListener("click", () => {
+  showFavorites = !showFavorites;
+  $("favorites").textContent =
+    showFavorites ? "★ Show all" : "☆ Favorites";
+  visibleLimit = 100;
+  render();
+});
+
+$("more").addEventListener("click", () => {
+  visibleLimit += 100;
+  render();
+});
+
+async function loadPlaylist() {
+  try {
+    $("count").textContent = "Fetching playlist...";
+
+    const response = await fetch(PLAYLIST);
+    if (!response.ok) throw new Error("Playlist request failed");
+
+    const text = await response.text();
+    allChannels = parseM3U(text);
+
+    if (!allChannels.length) {
+      throw new Error("No channels found in playlist");
+    }
+
+    const categories = [...new Set(
+      allChannels.map(ch => ch.group)
+    )].sort((a, b) => a.localeCompare(b));
+
+    for (const group of categories) {
+      const option = document.createElement("option");
+      option.value = group;
+      option.textContent = group;
+      $("category").append(option);
+    }
+
+    $("count").textContent =
+      `${allChannels.length.toLocaleString()} channels loaded`;
+
+    render();
+  } catch (error) {
+    $("count").textContent = "Could not load playlist";
+    $("channels").innerHTML =
+      '<div class="message">Unable to load the playlist. ' +
+      'Check your internet connection or try again later. ' +
+      'The playlist server may block browser requests (CORS).</div>';
+    console.error(error);
+  }
+}
+
+loadPlaylist();
+</script>
+</body>
+</html>
