@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#090d18">
+<title>Streamora — Live TV</title>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17"></script>
+<style>
+:root{--bg:#090d18;--panel:#111827;--line:#263247;--accent:#8b7cff;--text:#f1f5ff;--muted:#96a2b8}
+*{box-sizing:border-box}
+body{margin:0;background:radial-gradient(ellipse at top,#151a31 0,var(--bg) 55%);color:var(--text);font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+header{padding:18px 5%;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);background:#090d18cc;position:sticky;top:0;z-index:5;backdrop-filter:blur(14px)}
+.logo{font-size:24px;font-weight:900;letter-spacing:-1px}.logo span{color:var(--accent)}
+.status{font-size:12px;color:var(--muted)}
+main{max-width:1450px;margin:auto;padding:26px 4%}
+.hero{margin:8px 0 22px}.eyebrow{color:var(--accent);font-size:11px;font-weight:800;letter-spacing:2px;text-transform:uppercase}
+.hero h1{font-size:clamp(28px,4vw,43px);letter-spacing:-1.3px;margin:7px 0}.hero p{color:var(--muted);margin:0}
+.controls{display:grid;grid-template-columns:minmax(170px,1fr) minmax(140px,.55fr) minmax(140px,.55fr) auto;gap:10px;margin:22px 0}
+input,select,button{font:inherit;color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:12px}
+input{min-width:0}select{min-width:0;width:100%}button{cursor:pointer;transition:.2s}button:hover{border-color:var(--accent)}
+.layout{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(280px,1fr);gap:20px;align-items:start}
+.player-card,.list-card{background:linear-gradient(145deg,#141c2d,#0e1422);border:1px solid var(--line);border-radius:17px;overflow:hidden;box-shadow:0 14px 40px #0002}
+video{display:block;width:100%;aspect-ratio:16/9;background:#03050a}
+.now{padding:16px 18px}.now h2{font-size:18px;margin:0 0 5px}.now p{font-size:13px;color:var(--muted);margin:0}
+.list-head{padding:16px;border-bottom:1px solid var(--line)}.list-head h2{font-size:17px;margin:0 0 5px}#count{font-size:12px;color:var(--muted)}
+#channels{padding:8px;max-height:590px;overflow:auto}
+.channel{display:flex;align-items:center;gap:11px;width:100%;text-align:left;margin:3px 0;padding:10px;border-radius:11px;background:transparent;border-color:transparent}
+.channel.active{background:#242344;border-color:#5147a1}.channel img,.placeholder{width:42px;height:42px;border-radius:9px;object-fit:contain;background:#0b1020;flex-shrink:0}
+.placeholder{display:grid;place-items:center;font-weight:800;color:#a9a0ff}
+.details{min-width:0;flex:1}.details strong{display:block;font-size:13px;overflow-wrap:anywhere}.details small{display:block;color:var(--muted);font-size:11px;margin-top:4px}
+.star{color:#f8ce65;font-size:19px;flex-shrink:0}.message{padding:18px;color:var(--muted);font-size:14px;line-height:1.5}
+#more{width:calc(100% - 24px);margin:0 12px 12px}.hint{font-size:12px;color:var(--muted);margin-top:12px;line-height:1.5}
+footer{padding:28px 5%;text-align:center;color:var(--muted);font-size:12px}
+@media(max-width:850px){.controls{grid-template-columns:1fr 1fr}.controls input{grid-column:1/-1}.layout{grid-template-columns:1fr}}
+@media(max-width:480px){main{padding:18px 12px}.controls{grid-template-columns:1fr}.controls input{grid-column:auto}header{padding:15px}.status{font-size:10px}}
+</style>
+</head>
+<body>
+<header><div class="logo">STREAM<span>ORA</span></div><div class="status">● LIVE TV EXPLORER</div></header>
+<main>
+  <section class="hero">
+    <div class="eyebrow">Live channels from around the world</div>
+    <h1>Your world. Your channels.</h1>
+    <p>Search, filter by category and country, and explore public playlist entries.</p>
+  </section>
+  <div class="controls">
+    <input id="search" type="search" placeholder="Search channels..." aria-label="Search channels">
+    <select id="category" aria-label="Filter by category"><option value="">All categories</option></select>
+    <select id="country" aria-label="Filter by country"><option value="">All countries</option></select>
+    <button id="favorites" type="button">☆ Favorites</button>
+  </div>
+  <div class="layout">
+    <section class="player-card">
+      <video id="video" controls playsinline preload="metadata"></video>
+      <div class="now"><h2 id="playing">Choose a channel</h2><p id="playerStatus">Select a channel to start playback.</p></div>
+    </section>
+    <section class="list-card">
+      <div class="list-head"><h2>Explore channels</h2><div id="count">Loading playlist…</div></div>
+      <div id="channels"><div class="message">Loading channels…</div></div>
+      <button id="more" type="button" hidden>Show more</button>
+    </section>
+  </div>
+  <p class="hint">Country filtering uses IPTV-org channel metadata where available. Some playlist entries may have no matching country data. Playback depends on stream availability, browser support, and the stream provider's CORS settings.</p>
+</main>
+<footer>Streamora is an independent playlist player. Streams are provided by their respective sources; availability and playback are not guaranteed.</footer>
+<script>
+const PLAYLIST = "https://iptv-org.github.io/iptv/index.m3u";
+const CHANNELS_API = "https://iptv-org.github.io/api/channels.json";
+const COUNTRIES_API = "https://iptv-org.github.io/api/countries.json";
+const $ = id => document.getElementById(id);
+const video = $("video");
+let allChannels = [], selected = null, visibleLimit = 100;
+let showFavorites = false, favorites = new Set(), hls = null;
+
+try { favorites = new Set(JSON.parse(localStorage.getItem("streamora-favorites") || "[]")); } catch {}
+
+function parseAttributes(line) {
+  const attrs = {};
+  const re = /([\w-]+)="([^"]*)"/g;
+  let match;
+  while ((match = re.exec(line)) !== null) attrs[match[1].toLowerCase()] = match[2];
+  return attrs;
+}
+function parseM3U(text) {
+  const lines = text.split(/\r?\n/), channels = [];
+  let info = "";
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (line.startsWith("#EXTINF:")) { info = line; continue; }
+    if (line.startsWith("#") || !/^https?:\/\//i.test(line)) continue;
+    const comma = info.lastIndexOf(",");
+    const name = comma >= 0 ? info.slice(comma + 1).trim() : "Unknown channel";
+    const attrs = parseAttributes(info);
+    channels.push({
+      name, url: line, logo: attrs["tvg-logo"] || "",
+      group: attrs["group-title"] || "Uncategorized",
+      countryCodes: (attrs["tvg-country"] || "").split(/[;,\s]+/).map(x => x.trim().toLowerCase()).filter(Boolean),
+      countryCode: (attrs["tvg-country"] || "").split(/[;,\s]+/)[0].trim().toLowerCase(),
+      country: "", id: (attrs["tvg-id"] || "").trim(), sourceId: (attrs["tvg-id"] || line).trim()
+    });
+    info = "";
+  }
+  return channels;
+}
+
+function safeImage(url) {
+  try { const u = new URL(url); return /^https?:$/.test(u.protocol) ? u.href : ""; }
+  catch { return ""; }
+}
+function filteredChannels() {
+  const query = $("search").value.trim().toLowerCase();
+  const group = $("category").value, country = $("country").value;
+  return allChannels.filter(ch =>
+    (!query || ch.name.toLowerCase().includes(query) || ch.group.toLowerCase().includes(query) || ch.country.toLowerCase().includes(query)) &&
+    (!group || ch.group === group) &&
+    (!country || (ch.countryCodes || [ch.countryCode]).includes(country)) &&
+    (!showFavorites || favorites.has(ch.id))
+  );
+}
+function render() {
+  const results = filteredChannels();
+  $("count").textContent = `${results.length.toLocaleString()} channels found`;
+  const container = $("channels");
+  container.replaceChildren();
+  if (!results.length) {
+    const msg = document.createElement("div"); msg.className = "message";
+    msg.textContent = "No channels found. Try changing the search or filters.";
+    container.append(msg); $("more").hidden = true; return;
+  }
+  results.slice(0, visibleLimit).forEach(ch => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "channel" + (selected?.id === ch.id ? " active" : "");
+    if (safeImage(ch.logo)) {
+      const img = document.createElement("img"); img.src = safeImage(ch.logo); img.alt = "";
+      img.loading = "lazy"; img.referrerPolicy = "no-referrer";
+      img.onerror = () => { const p = document.createElement("div"); p.className = "placeholder"; p.textContent = "TV"; img.replaceWith(p); };
+      button.append(img);
+    } else {
+      const p = document.createElement("div"); p.className = "placeholder"; p.textContent = "TV"; button.append(p);
+    }
+    const details = document.createElement("div"); details.className = "details";
+    const name = document.createElement("strong"); name.textContent = ch.name;
+    const sub = document.createElement("small");
+    sub.textContent = `${ch.group} · ${ch.country || "Country unknown"}`;
+    details.append(name, sub);
+    const star = document.createElement("span"); star.className = "star";
+    star.textContent = favorites.has(ch.id) ? "★" : "☆"; star.title = "Toggle favorite";
+    star.addEventListener("click", e => { e.stopPropagation(); toggleFavorite(ch); });
+    button.append(details, star);
+    button.addEventListener("click", () => playChannel(ch));
+    container.append(button);
+  });
+  $("more").hidden = results.length <= visibleLimit;
+}
+function toggleFavorite(ch) {
+  if (favorites.has(ch.id)) favorites.delete(ch.id); else favorites.add(ch.id);
+  try { localStorage.setItem("streamora-favorites", JSON.stringify([...favorites])); } catch {}
+  render();
+}
+function stopPlayer() {
+  if (hls) { hls.destroy(); hls = null; }
+  video.pause(); video.removeAttribute("src"); video.load();
+}
+function playChannel(ch) {
+  selected = ch; stopPlayer();
+  $("playing").textContent = ch.name;
+  $("playerStatus").textContent = "Connecting to stream…";
+  if (video.canPlayType("application/vnd.apple.mpegurl")) {
+    video.src = ch.url;
+  } else if (window.Hls && Hls.isSupported()) {
+    hls = new Hls();
+    hls.loadSource(ch.url); hls.attachMedia(video);
+    hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {
+      $("playerStatus").textContent = "Press Play to start the stream.";
+    }));
+    hls.on(Hls.Events.ERROR, (_, data) => {
+      if (data.fatal) $("playerStatus").textContent = "Stream unavailable or unsupported by this browser.";
+    });
+  } else { video.src = ch.url; }
+  video.play().catch(() => {
+    $("playerStatus").textContent = "Press Play. If playback fails, this stream may be unsupported.";
+  });
+  render();
+}
+video.addEventListener("playing", () => $("playerStatus").textContent = "● Playing");
+video.addEventListener("waiting", () => $("playerStatus").textContent = "Buffering…");
+video.addEventListener("error", () => $("playerStatus").textContent = "Playback failed. Try another channel.");
+function fillSelect(id, entries, allLabel) {
+  const select = $(id);
+  select.replaceChildren();
+  const first = document.createElement("option"); first.value = ""; first.textContent = allLabel; select.append(first);
+  entries.forEach(entry => {
+    const opt = document.createElement("option");
+    opt.value = entry.value; opt.textContent = entry.label; select.append(opt);
+  });
+}
+async function fetchJSON(url) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Could not load ${url}`);
+  return response.json();
+}
+async function loadPlaylist() {
+  $("count").textContent = "Fetching playlist and channel metadata…";
+  try {
+    // Playlist is essential; metadata APIs are optional so one unavailable API
+    // does not prevent the page from loading.
+    const playlistResponse = await fetch(PLAYLIST);
+    if (!playlistResponse.ok) throw new Error("Playlist request failed");
+    allChannels = parseM3U(await playlistResponse.text());
+    if (!allChannels.length) throw new Error("No channels found in playlist");
+
+    let channelData = [], countryData = [];
+    try { channelData = await fetchJSON(CHANNELS_API); } catch (e) { console.warn("Channel metadata unavailable", e); }
+    try { countryData = await fetchJSON(COUNTRIES_API); } catch (e) { console.warn("Country names unavailable", e); }
+
+    const channelMap = new Map();
+    const channelNameMap = new Map();
+    for (const c of channelData) {
+      if (c.id) channelMap.set(String(c.id).trim().toLowerCase(), c);
+      if (c.name) {
+        const key = String(c.name).trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+        if (key && !channelNameMap.has(key)) channelNameMap.set(key, c);
+      }
+    }
+    const countryMap = new Map(countryData.map(c => [
+      String(c.code || "").trim().toLowerCase(), c.name || c.code || "Unknown country"
+    ]));
+
+    for (const ch of allChannels) {
+      const id = ch.id.toLowerCase();
+      const nameKey = ch.name.trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+      const metadata = (id && channelMap.get(id)) || channelNameMap.get(nameKey);
+      let codes = [...(ch.countryCodes || [])];
+      if (!codes.length && metadata?.country) {
+        codes = String(metadata.country).split(/[;,\s]+/).map(x => x.trim().toLowerCase()).filter(Boolean);
+      }
+      ch.countryCodes = [...new Set(codes)];
+      ch.countryCode = ch.countryCodes[0] || "";
+      ch.country = ch.countryCodes.length
+        ? ch.countryCodes.map(code => countryMap.get(code) || code.toUpperCase()).join(", ")
+        : "Country unknown";
+      ch.id = ch.sourceId || ch.url;
+    }
+
+    const categories = [...new Set(allChannels.map(ch => ch.group))].sort((a,b) => a.localeCompare(b));
+    fillSelect("category", categories.map(x => ({value:x,label:x})), "All categories");
+
+    // Build country choices from countries actually assigned to channels.
+    // If the country-name API fails, show the country code rather than a blank list.
+    const countryCodes = [...new Set(allChannels.flatMap(ch => ch.countryCodes || []).filter(Boolean))]
+      .sort((a,b) => (countryMap.get(a) || a).localeCompare(countryMap.get(b) || b));
+    fillSelect("country", countryCodes.map(code => ({
+      value: code, label: countryMap.get(code) || code.toUpperCase()
+    })), countryCodes.length ? "All countries" : "No country data available");
+
+    $("count").textContent = `${allChannels.length.toLocaleString()} channels loaded`;
+    render();
+  } catch (error) {
+    $("count").textContent = "Could not load playlist";
+    const container = $("channels"); container.replaceChildren();
+    const msg = document.createElement("div"); msg.className = "message";
+    msg.textContent = "Unable to load the playlist. Check your internet connection or open this page through GitHub Pages / a web server. Details are available in the browser console.";
+    container.append(msg); console.error(error);
+  }
+}
+$("search").addEventListener("input", () => { visibleLimit = 100; render(); });
+$("category").addEventListener("change", () => { visibleLimit = 100; render(); });
+$("country").addEventListener("change", () => { visibleLimit = 100; render(); });
+$("favorites").addEventListener("click", () => {
+  showFavorites = !showFavorites;
+  $("favorites").textContent = showFavorites ? "★ Show all" : "☆ Favorites";
+  visibleLimit = 100; render();
+});
+$("more").addEventListener("click", () => { visibleLimit += 100; render(); });
+loadPlaylist();
+</script>
+</body>
+</html>
